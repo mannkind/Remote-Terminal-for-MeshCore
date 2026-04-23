@@ -252,6 +252,33 @@ def _validate_bot_config(config: dict) -> None:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    schedule = config.get("schedule", "")
+    if schedule and schedule.strip():
+        from croniter import croniter
+
+        if not croniter.is_valid(schedule):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid cron expression: {schedule!r}",
+            )
+
+    cron_destination = config.get("cron_destination")
+    if cron_destination is not None:
+        if not isinstance(cron_destination, dict):
+            raise HTTPException(status_code=400, detail="cron_destination must be an object")
+        dest_type = cron_destination.get("type", "")
+        dest_key = cron_destination.get("key", "")
+        if dest_type not in ("channel", "contact"):
+            raise HTTPException(
+                status_code=400,
+                detail="cron_destination.type must be 'channel' or 'contact'",
+            )
+        if not isinstance(dest_key, str) or not dest_key.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="cron_destination.key must be a non-empty string",
+            )
+
 
 def _validate_apprise_config(config: dict) -> None:
     """Validate apprise config blob."""

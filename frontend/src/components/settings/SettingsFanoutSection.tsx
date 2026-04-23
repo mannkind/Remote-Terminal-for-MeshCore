@@ -1774,6 +1774,23 @@ function BotConfigEditor({
   onChange: (config: Record<string, unknown>) => void;
 }) {
   const code = (config.code as string) || '';
+  const schedule = (config.schedule as string) || '';
+  const cronDest = (config.cron_destination as Record<string, string> | undefined) ?? {};
+  const destType = cronDest.type || 'channel';
+  const destKey = cronDest.key || '';
+
+  function setSchedule(value: string) {
+    const next: Record<string, unknown> = { ...config, schedule: value };
+    if (!value.trim()) {
+      delete next.cron_destination;
+    }
+    onChange(next);
+  }
+
+  function setCronDest(type: string, key: string) {
+    onChange({ ...config, cron_destination: { type, key } });
+  }
+
   return (
     <div className="space-y-3">
       <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-md">
@@ -1822,6 +1839,60 @@ function BotConfigEditor({
       >
         <BotCodeEditor value={code} onChange={(c) => onChange({ ...config, code: c })} />
       </Suspense>
+
+      <div className="space-y-2">
+        <Label htmlFor="bot-schedule">Cron Schedule (optional)</Label>
+        <Input
+          id="bot-schedule"
+          placeholder="e.g. */5 * * * *  (leave empty to disable)"
+          value={schedule}
+          onChange={(e) => setSchedule(e.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          Standard 5-field cron expression. When set, the bot runs on this schedule with{' '}
+          <code>is_cron=True</code> and <code>scheduled_time</code> passed to your function.
+        </p>
+      </div>
+
+      {schedule.trim() && (
+        <div className="space-y-2 p-3 border border-border rounded-md">
+          <Label>Scheduled Message Destination</Label>
+          <p className="text-xs text-muted-foreground">
+            Where to send the bot&apos;s return value when triggered by the schedule.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setCronDest('channel', destKey)}
+              className={cn(
+                'px-3 py-1 rounded text-sm border transition-colors',
+                destType === 'channel'
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'border-border hover:bg-muted'
+              )}
+            >
+              Channel
+            </button>
+            <button
+              type="button"
+              onClick={() => setCronDest('contact', destKey)}
+              className={cn(
+                'px-3 py-1 rounded text-sm border transition-colors',
+                destType === 'contact'
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'border-border hover:bg-muted'
+              )}
+            >
+              Contact (DM)
+            </button>
+          </div>
+          <Input
+            placeholder={destType === 'channel' ? 'Channel key (hex)' : 'Contact public key (hex)'}
+            value={destKey}
+            onChange={(e) => setCronDest(destType, e.target.value)}
+          />
+        </div>
+      )}
 
       <div className="text-[0.8125rem] text-muted-foreground space-y-1">
         <p>

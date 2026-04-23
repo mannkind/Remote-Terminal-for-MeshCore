@@ -908,3 +908,232 @@ class TestBotListResponses:
             )
 
             assert sent_messages == ["Just one message"]
+
+
+class TestCronBotExecution:
+    """Test is_cron and scheduled_time parameter support in execute_bot_code."""
+
+    def test_is_cron_true_passed_to_kwargs_bot(self):
+        """Bot using **kwargs receives is_cron=True when called from schedule."""
+        code = """
+def bot(**kwargs):
+    return str(kwargs.get('is_cron'))
+"""
+        result = execute_bot_code(
+            code=code,
+            sender_name=None,
+            sender_key=None,
+            message_text="",
+            is_dm=False,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+            is_cron=True,
+        )
+        assert result == "True"
+
+    def test_scheduled_time_passed_to_kwargs_bot(self):
+        """Bot using **kwargs receives scheduled_time when called from schedule."""
+        code = """
+def bot(**kwargs):
+    return str(kwargs.get('scheduled_time'))
+"""
+        result = execute_bot_code(
+            code=code,
+            sender_name=None,
+            sender_key=None,
+            message_text="",
+            is_dm=False,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+            is_cron=True,
+            scheduled_time=1234567890.0,
+        )
+        assert result == "1234567890.0"
+
+    def test_explicit_is_cron_param_bot(self):
+        """Bot with explicit is_cron keyword param receives correct value."""
+        code = """
+def bot(*, is_cron=False, **kwargs):
+    return "cron" if is_cron else "msg"
+"""
+        cron_result = execute_bot_code(
+            code=code,
+            sender_name=None,
+            sender_key=None,
+            message_text="",
+            is_dm=False,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+            is_cron=True,
+        )
+        msg_result = execute_bot_code(
+            code=code,
+            sender_name="Alice",
+            sender_key="a" * 64,
+            message_text="hi",
+            is_dm=True,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+            is_cron=False,
+        )
+        assert cron_result == "cron"
+        assert msg_result == "msg"
+
+    def test_legacy_bot_without_is_cron_param_still_works(self):
+        """Legacy bots without is_cron param continue to work when called with is_cron=True."""
+        code = """
+def bot(sender_name, sender_key, message_text, is_dm, channel_key, channel_name, sender_timestamp, path):
+    return "ok"
+"""
+        result = execute_bot_code(
+            code=code,
+            sender_name=None,
+            sender_key=None,
+            message_text="",
+            is_dm=False,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+            is_cron=True,
+        )
+        assert result == "ok"
+
+    def test_is_cron_false_by_default(self):
+        """is_cron defaults to False for normal message-triggered calls."""
+        code = """
+def bot(**kwargs):
+    return str(kwargs.get('is_cron'))
+"""
+        result = execute_bot_code(
+            code=code,
+            sender_name="Alice",
+            sender_key="a" * 64,
+            message_text="hello",
+            is_dm=True,
+            channel_key=None,
+            channel_name=None,
+            sender_timestamp=None,
+            path=None,
+        )
+        assert result == "False"
+
+
+class TestCronBotValidation:
+    """Test router validation for cron schedule and destination config."""
+
+    def test_valid_cron_expression_passes(self):
+        """A valid cron expression is accepted."""
+        from app.routers.fanout import _validate_bot_config
+
+        _validate_bot_config(
+            {
+                "code": "def bot(**kwargs):\n    return 'ping'",
+                "schedule": "*/5 * * * *",
+            }
+        )
+
+    def test_invalid_cron_expression_raises(self):
+        """An invalid cron expression raises HTTPException 400."""
+        from fastapi import HTTPException
+
+        from app.routers.fanout import _validate_bot_config
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_bot_config(
+                {
+                    "code": "def bot(**kwargs):\n    return 'ping'",
+                    "schedule": "not a cron",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "cron" in exc_info.value.detail.lower()
+
+    def test_empty_schedule_passes(self):
+        """An empty schedule string is treated as disabled (no validation)."""
+        from app.routers.fanout import _validate_bot_config
+
+        _validate_bot_config(
+            {
+                "code": "def bot(**kwargs):\n    return 'ping'",
+                "schedule": "",
+            }
+        )
+
+    def test_valid_channel_destination_passes(self):
+        """A valid channel cron_destination is accepted."""
+        from app.routers.fanout import _validate_bot_config
+
+        _validate_bot_config(
+            {
+                "code": "def bot(**kwargs):\n    return 'ping'",
+                "schedule": "* * * * *",
+                "cron_destination": {"type": "channel", "key": "abcdef1234"},
+            }
+        )
+
+    def test_valid_contact_destination_passes(self):
+        """A valid contact cron_destination is accepted."""
+        from app.routers.fanout import _validate_bot_config
+
+        _validate_bot_config(
+            {
+                "code": "def bot(**kwargs):\n    return 'ping'",
+                "schedule": "* * * * *",
+                "cron_destination": {"type": "contact", "key": "a" * 64},
+            }
+        )
+
+    def test_invalid_destination_type_raises(self):
+        """Unknown cron_destination type raises HTTPException 400."""
+        from fastapi import HTTPException
+
+        from app.routers.fanout import _validate_bot_config
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_bot_config(
+                {
+                    "code": "def bot(**kwargs):\n    return 'ping'",
+                    "schedule": "* * * * *",
+                    "cron_destination": {"type": "broadcast", "key": "abc123"},
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "type" in exc_info.value.detail.lower()
+
+    def test_missing_destination_key_raises(self):
+        """Empty cron_destination key raises HTTPException 400."""
+        from fastapi import HTTPException
+
+        from app.routers.fanout import _validate_bot_config
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_bot_config(
+                {
+                    "code": "def bot(**kwargs):\n    return 'ping'",
+                    "schedule": "* * * * *",
+                    "cron_destination": {"type": "channel", "key": ""},
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "key" in exc_info.value.detail.lower()
+
+    def test_destination_without_schedule_passes(self):
+        """cron_destination without schedule is validated normally (destination check still runs)."""
+        from app.routers.fanout import _validate_bot_config
+
+        # Valid destination even without schedule — no error
+        _validate_bot_config(
+            {
+                "code": "def bot(**kwargs):\n    return 'ping'",
+                "cron_destination": {"type": "channel", "key": "abc123"},
+            }
+        )
