@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import UTC, datetime
 
 from app.fanout.base import FanoutModule
 
@@ -52,16 +54,28 @@ class BotModule(FanoutModule):
     def __init__(self, config_id: str, config: dict, *, name: str = "Bot") -> None:
         super().__init__(config_id, config, name=name)
         self._tasks: set[asyncio.Task] = set()
+        self._cron_task: asyncio.Task | None = None
         self._active = True
+
+    async def start(self) -> None:
+        schedule = self.config.get("schedule", "")
+        if schedule and schedule.strip():
+            self._cron_task = asyncio.create_task(self._run_cron_loop())
 
     async def stop(self) -> None:
         self._active = False
+        if self._cron_task is not None:
+            self._cron_task.cancel()
         for task in self._tasks:
             task.cancel()
         # Wait briefly for tasks to acknowledge cancellation
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        all_tasks = list(self._tasks)
+        if self._cron_task is not None:
+            all_tasks.append(self._cron_task)
+        if all_tasks:
+            await asyncio.gather(*all_tasks, return_exceptions=True)
         self._tasks.clear()
+        self._cron_task = None
 
     async def on_message(self, data: dict) -> None:
         """Kick off bot execution in a background task so we don't block dispatch."""
@@ -173,6 +187,78 @@ class BotModule(FanoutModule):
 
         if response and self._active:
             await process_bot_response(response, is_dm, sender_key or "", channel_key)
+
+    async def _run_cron_loop(self) -> None:
+        from croniter import croniter
+
+        schedule = self.config["schedule"]
+        while self._active:
+            cron = croniter(schedule, datetime.now(UTC))
+            next_time = cron.get_next(float)
+            sleep_secs = next_time - time.time()
+            if sleep_secs > 0:
+                await asyncio.sleep(sleep_secs)
+            if not self._active:
+                break
+            logger.debug("Bot '%s' cron firing for schedule '%s'", self.name, schedule)
+            task = asyncio.create_task(self._run_for_schedule(next_time))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _run_for_schedule(self, scheduled_time: float) -> None:
+        from app.fanout.bot_exec import (
+            BOT_EXECUTION_TIMEOUT,
+            execute_bot_code,
+            process_bot_response,
+        )
+
+        code = self.config.get("code", "")
+        if not code or not code.strip():
+            return
+
+        destination = self.config.get("cron_destination")
+
+        from app.fanout.bot_exec import _bot_executor, _bot_semaphore
+
+        async with _bot_semaphore:
+            loop = asyncio.get_running_loop()
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        _bot_executor,
+                        execute_bot_code,
+                        code,
+                        None,   # sender_name
+                        None,   # sender_key
+                        "",     # message_text
+                        False,  # is_dm
+                        None,   # channel_key
+                        None,   # channel_name
+                        None,   # sender_timestamp
+                        None,   # path
+                        False,  # is_outgoing
+                        None,   # path_bytes_per_hop
+                        True,   # is_cron
+                        scheduled_time,
+                    ),
+                    timeout=BOT_EXECUTION_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.warning("Bot '%s' cron execution timed out", self.name)
+                return
+            except Exception:
+                logger.exception("Bot '%s' cron execution error", self.name)
+                return
+
+        if not response or not self._active or not destination:
+            return
+
+        dest_type = destination.get("type", "")
+        dest_key = destination.get("key", "")
+        is_dm = dest_type == "contact"
+        channel_key = dest_key if dest_type == "channel" else None
+        sender_key = dest_key if is_dm else ""
+        await process_bot_response(response, is_dm, sender_key, channel_key)
 
     @property
     def status(self) -> str:

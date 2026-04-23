@@ -76,7 +76,7 @@ def _analyze_bot_signature(bot_func_or_sig) -> BotCallPlan:
         for p in param_values
         if p.kind == inspect.Parameter.KEYWORD_ONLY
         and p.default is inspect.Parameter.empty
-        and p.name not in {"is_outgoing", "path_bytes_per_hop"}
+        and p.name not in {"is_outgoing", "path_bytes_per_hop", "is_cron", "scheduled_time"}
     ]
     if unsupported_required_kwonly:
         raise ValueError(
@@ -102,6 +102,10 @@ def _analyze_bot_signature(bot_func_or_sig) -> BotCallPlan:
         keyword_args["is_outgoing"] = False
     if has_kwargs or "path_bytes_per_hop" in params:
         keyword_args["path_bytes_per_hop"] = 1
+    if has_kwargs or "is_cron" in params:
+        keyword_args["is_cron"] = False
+    if has_kwargs or "scheduled_time" in params:
+        keyword_args["scheduled_time"] = None
     candidate_specs.append(("keyword", [], keyword_args))
 
     if not has_kwargs and explicit_optional_names:
@@ -148,6 +152,8 @@ def execute_bot_code(
     path: str | None,
     is_outgoing: bool = False,
     path_bytes_per_hop: int | None = None,
+    is_cron: bool = False,
+    scheduled_time: float | None = None,
 ) -> str | list[str] | None:
     """
     Execute user-provided bot code with message context.
@@ -255,6 +261,10 @@ def execute_bot_code(
                 keyword_args["is_outgoing"] = is_outgoing
             if "path_bytes_per_hop" in call_plan.keyword_args:
                 keyword_args["path_bytes_per_hop"] = path_bytes_per_hop
+            if "is_cron" in call_plan.keyword_args:
+                keyword_args["is_cron"] = is_cron
+            if "scheduled_time" in call_plan.keyword_args:
+                keyword_args["scheduled_time"] = scheduled_time
             result = bot_func(**keyword_args)
         else:
             result = bot_func(
